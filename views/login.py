@@ -4,7 +4,11 @@ import db
 
 
 def LoginView(page: ft.Page) -> ft.View:
-    modo_cadastro = {"ativo": not db.existe_algum_usuario()}
+    # Só é possível criar conta quando ainda não existe nenhuma — depois que
+    # a primeira pessoa cria a conta, todo mundo entra só com login, usando
+    # essas mesmas credenciais compartilhadas (sem opção de criar outra).
+    sem_nenhum_usuario = not db.existe_algum_usuario()
+    modo_cadastro = {"ativo": sem_nenhum_usuario}
 
     email = ft.TextField(
         label="E-mail",
@@ -37,6 +41,10 @@ def LoginView(page: ft.Page) -> ft.View:
             subtitulo.value = "Entre com sua conta para continuar."
             botao_principal.text = "Entrar"
             link_alternar.text = "Não tem conta? Criar conta"
+        # Só mostra o link de alternar cadastro/login enquanto NENHUMA conta
+        # existir ainda. Depois que a primeira é criada, ninguém mais pode
+        # se auto-cadastrar — só entrar com a conta compartilhada.
+        link_alternar.visible = sem_nenhum_usuario
         erro.value = ""
         page.update()
 

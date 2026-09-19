@@ -7,6 +7,17 @@ import hashlib
 import secrets
 import datetime
 
+# Se a variável de ambiente DATABASE_URL existir (configurada no Render
+# apontando pra um banco Postgres gerenciado), usamos Postgres — que é
+# persistente de verdade. Sem ela (rodando no seu PC, por exemplo),
+# caímos automaticamente para um arquivo SQLite local, como sempre foi.
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+USANDO_POSTGRES = bool(DATABASE_URL)
+
+if USANDO_POSTGRES:
+    import psycopg2
+    import psycopg2.extras
+
 
 def _base_dir() -> str:
     # Quando empacotado com "flet pack" (PyInstaller), sys.frozen é True e
@@ -20,10 +31,39 @@ def _base_dir() -> str:
 DB_PATH = os.path.join(_base_dir(), "medsafe.db")
 
 
+class _ConnShim:
+    """Faz o mesmo código de SQL funcionar tanto no SQLite quanto no Postgres:
+    troca os placeholders '?' por '%s' quando necessário e sempre devolve um
+    cursor (SQLite deixa chamar conn.execute() direto; psycopg2 não)."""
+
+    def __init__(self, raw):
+        self.raw = raw
+
+    def execute(self, sql, params=()):
+        if USANDO_POSTGRES:
+            sql = sql.replace("?", "%s")
+        cur = self.raw.cursor()
+        cur.execute(sql, params)
+        return cur
+
+    def commit(self):
+        self.raw.commit()
+
+    def close(self):
+        self.raw.close()
+
+
 def _conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    if USANDO_POSTGRES:
+        raw = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+        return _ConnShim(raw)
+    raw = sqlite3.connect(DB_PATH)
+    raw.row_factory = sqlite3.Row
+    return _ConnShim(raw)
+
+
+def _pk_autoincremento() -> str:
+    return "SERIAL PRIMARY KEY" if USANDO_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
 
 
 def init_db():
@@ -48,7 +88,10 @@ def init_db():
         """
     )
     conn.commit()
-    _garantir_colunas(conn, "medicamentos", {"categoria": "TEXT DEFAULT ''", "validade": "TEXT DEFAULT ''"})
+    if not USANDO_POSTGRES:
+        # No Postgres a tabela já nasce com essas colunas (acima), então essa
+        # migração incremental só é necessária pra bancos SQLite antigos.
+        _garantir_colunas(conn, "medicamentos", {"categoria": "TEXT DEFAULT ''", "validade": "TEXT DEFAULT ''"})
 
     # Semeia com dados de exemplo apenas se a tabela estiver vazia
     total = conn.execute("SELECT COUNT(*) AS c FROM medicamentos").fetchone()["c"]
@@ -66,12 +109,13 @@ def init_db():
 
 
 def _garantir_colunas(conn, tabela, colunas: dict):
-    """Adiciona colunas que ainda não existem, sem apagar dados já salvos."""
+    """Adiciona colunas que ainda não existem, sem apagar dados já salvos (só SQLite)."""
     existentes = {row["name"] for row in conn.execute(f"PRAGMA table_info({tabela})")}
     for nome, tipo in colunas.items():
         if nome not in existentes:
             conn.execute(f"ALTER TABLE {tabela} ADD COLUMN {nome} {tipo}")
     conn.commit()
+
 
 
 
@@ -124,7 +168,7 @@ def listar(termo: str = "", apenas_favoritos: bool = False, apenas_alto_risco: b
     if categoria:
         query += " AND categoria = ?"
         params.append(categoria)
-    coluna_ordem = {"nome": "nome", "recentes": "rowid DESC", "validade": "validade"}.get(ordenar_por, "nome")
+    coluna_ordem = {"nome": "nome", "validade": "validade"}.get(ordenar_por, "nome")
     query += f" ORDER BY {coluna_ordem}"
     rows = conn.execute(query, params).fetchall()
     conn.close()
@@ -357,9 +401,9 @@ def autenticar(email: str, senha: str) -> bool:
 
 def _init_logs(conn):
     conn.execute(
-        """
+        f"""
         CREATE TABLE IF NOT EXISTS log_alteracoes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {_pk_autoincremento()},
             data_hora TEXT,
             usuario TEXT,
             acao TEXT,
@@ -370,9 +414,9 @@ def _init_logs(conn):
         """
     )
     conn.execute(
-        """
+        f"""
         CREATE TABLE IF NOT EXISTS administracoes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {_pk_autoincremento()},
             data_hora TEXT,
             usuario TEXT,
             detalhe TEXT
