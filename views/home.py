@@ -54,6 +54,7 @@ def HomeView(page: ft.Page) -> ft.View:
         bottom_appbar=None,
         navigation_bar=bottom_nav(page, 0),
         padding=0,
+        scroll=ft.ScrollMode.AUTO,
         horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
         controls=[
             header,
